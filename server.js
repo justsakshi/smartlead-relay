@@ -1,19 +1,18 @@
 const express = require("express");
 
-// fetch helper for CommonJS
+// fetch for CommonJS
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 app.use(express.json());
-// Slack interactive payloads are urlencoded
 app.use(express.urlencoded({ extended: true }));
 
-// Environment variables
-const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
+// Slack tokens
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SMARTLEAD_API_KEY = process.env.SMARTLEAD_API_KEY || "mock-mode";
 
-// Helper to build Slack alert with dropdown
+// Builds Slack message with dropdown
 function formatSlackMessage(payload) {
   const {
     event_type,
@@ -26,43 +25,21 @@ function formatSlackMessage(payload) {
   } = payload;
 
   const title = `Smartlead Alert: ${event_type}`;
-
   const fields = [];
 
-  if (campaign_name) {
-    fields.push({ type: "mrkdwn", text: `*Campaign*: ${campaign_name}` });
-  }
-
-  if (bounce_rate !== undefined && bounce_rate !== null) {
-    fields.push({
-      type: "mrkdwn",
-      text: `*Bounce rate*: ${bounce_rate} percent`
-    });
-  }
-
-  if (inbox) {
-    fields.push({ type: "mrkdwn", text: `*Inbox*: ${inbox}` });
-  }
-
-  if (domain) {
-    fields.push({ type: "mrkdwn", text: `*Domain*: ${domain}` });
-  }
+  if (campaign_name) fields.push({ type: "mrkdwn", text: `*Campaign*: ${campaign_name}` });
+  if (bounce_rate) fields.push({ type: "mrkdwn", text: `*Bounce rate*: ${bounce_rate} percent` });
+  if (inbox) fields.push({ type: "mrkdwn", text: `*Inbox*: ${inbox}` });
+  if (domain) fields.push({ type: "mrkdwn", text: `*Domain*: ${domain}` });
 
   const eventTime = time ? new Date(time).toLocaleString() : new Date().toLocaleString();
   fields.push({ type: "mrkdwn", text: `*Time*: ${eventTime}` });
 
   const blocks = [
-    {
-      type: "header",
-      text: { type: "plain_text", text: title }
-    },
-    {
-      type: "section",
-      fields
-    }
+    { type: "header", text: { type: "plain_text", text: title } },
+    { type: "section", fields }
   ];
 
-  // Add dropdown only if we have a campaign id
   if (campaign_id) {
     blocks.push({
       type: "actions",
@@ -70,10 +47,7 @@ function formatSlackMessage(payload) {
         {
           type: "static_select",
           action_id: "campaign_action_select",
-          placeholder: {
-            type: "plain_text",
-            text: "Select campaign action"
-          },
+          placeholder: { type: "plain_text", text: "Select action" },
           options: [
             {
               text: { type: "plain_text", text: "Resume campaign" },
@@ -93,84 +67,60 @@ function formatSlackMessage(payload) {
     });
   }
 
-  return {
-    text: title,
-    blocks
-  };
+  return { blocks };
 }
 
-// Smartlead event endpoint (already working)
+// Smartlead event → Slack alert
 app.post("/smartlead-event", async (req, res) => {
   try {
     const payload = req.body;
+    const message = formatSlackMessage(payload);
 
-    const slackMessage = formatSlackMessage(payload);
-
-    await fetch(SLACK_WEBHOOK_URL, {
+    await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(slackMessage)
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        channel: "smartlead-alerts",
+        ...message
+      })
     });
 
     res.json({ status: "ok" });
   } catch (err) {
-    console.error("Error in /smartlead-event", err);
+    console.error("Error sending Slack message", err);
     res.status(500).json({ error: "Failed" });
   }
 });
 
-// New endpoint for Slack interactive actions
+// Slack dropdown action handler
 app.post("/slack-action", async (req, res) => {
   try {
-    // Slack sends payload as urlencoded with a "payload" field
     const payload = JSON.parse(req.body.payload);
     const action = payload.actions[0];
+    const [command, campaignId] = action.selected_option.value.split(":");
 
-    const value = action.selected_option.value; 
-    const [command, campaignId] = value.split(":");
-
-    console.log("Slack action received:", command, campaignId);
-
-    let resultMessage;
-
-    if (command === "resume") {
-      await mockSmartleadCall("resume", campaignId);
-      resultMessage = `Resume requested for campaign ${campaignId}`;
-    } else if (command === "pause") {
-      await mockSmartleadCall("pause", campaignId);
-      resultMessage = `Pause requested for campaign ${campaignId}`;
-    } else if (command === "restart") {
-      await mockSmartleadCall("restart", campaignId);
-      resultMessage = `Restart requested for campaign ${campaignId}`;
-    }
+    console.log("Slack action:", command, "for campaign", campaignId);
 
     const responseUrl = payload.response_url;
-    if (responseUrl) {
-      await fetch(responseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: resultMessage,
-          response_type: "ephemeral",
-          replace_original: false
-        })
-      });
-    }
 
-    res.status(200).send(""); 
+    await fetch(responseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: `${command} requested for campaign ${campaignId}`,
+        response_type: "ephemeral"
+      })
+    });
+
+    res.status(200).send();
   } catch (err) {
-    console.error("Error in /slack-action", err);
-    res.status(500).send("");
+    console.error("Slack action error", err);
+    res.status(500).send();
   }
 });
 
-// MOCK for now
-async function mockSmartleadCall(action, campaignId) {
-  console.log(`[MOCK] Would call Smartlead API to ${action} campaign ${campaignId}`);
-  return;
-}
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Relay running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Relay running on port ${PORT}`));
