@@ -10,7 +10,20 @@ app.use(express.urlencoded({ extended: true }));
 
 // Slack tokens
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
-const SMARTLEAD_API_KEY = process.env.SMARTLEAD_API_KEY || "mock-mode";
+// Support multiple Smartlead accounts
+const SMARTLEAD_KEYS = [
+  process.env.SMARTLEAD_API_KEY_1,
+  process.env.SMARTLEAD_API_KEY_2,
+  process.env.SMARTLEAD_API_KEY_3
+].filter(Boolean);
+
+// Simple dynamic account assignment (will refine with client mapping later)
+function getAccountForCampaign(campaignId) {
+  // For now, choose based on prefix or fallback to first account
+  if (campaignId.startsWith("A")) return SMARTLEAD_KEYS[0];
+  if (campaignId.startsWith("B")) return SMARTLEAD_KEYS[1];
+  return SMARTLEAD_KEYS[0]; // fallback
+}
 
 // Builds Slack message with dropdown
 function formatSlackMessage(payload) {
@@ -94,6 +107,18 @@ app.post("/smartlead-event", async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
+// Placeholder Smartlead API handler
+async function smartleadAction(campaignId, action, apiKey) {
+  console.log("Simulating Smartlead API:", { campaignId, action, apiKey });
+
+  // When Smartlead API docs arrive, replace this with actual API call:
+  // await fetch("https://api.smartlead.ai/v1/...");
+
+  return {
+    success: true,
+    message: `${action} triggered for campaign ${campaignId}`
+  };
+}
 
 // Slack dropdown action handler
 app.post("/slack-action", async (req, res) => {
@@ -102,15 +127,18 @@ app.post("/slack-action", async (req, res) => {
     const action = payload.actions[0];
     const [command, campaignId] = action.selected_option.value.split(":");
 
-    console.log("Slack action:", command, "for campaign", campaignId);
+    // Pick correct client Smartlead API key
+    const apiKey = getAccountForCampaign(campaignId);
 
-    const responseUrl = payload.response_url;
+    // Execute Smartlead API action (mock until keys arrive)
+    const result = await smartleadAction(campaignId, command, apiKey);
 
-    await fetch(responseUrl, {
+    // Send confirmation back to Slack
+    await fetch(payload.response_url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        text: `${command} requested for campaign ${campaignId}`,
+        text: result.message,
         response_type: "ephemeral"
       })
     });
@@ -121,6 +149,3 @@ app.post("/slack-action", async (req, res) => {
     res.status(500).send();
   }
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Relay running on port ${PORT}`));
